@@ -405,7 +405,202 @@ Cryptcat в свою очередь шифрует всю передаваему
 
 # 11. L2, L3 Sockets sniffing
 
-**Цель работы:** Исследование возможности RAW-сокетов предоставляющих доступ к полям заголовков 
-сообщений протоколов уровней L2 и L3 модели OSI.
+## 1. Цель работы
 
-*TODO*
+Исследование возможности RAW-сокетов предоставляющих доступ к полям заголовков сообщений протоколов уровней L2 и L3 модели OSI.
+
+## 2. Ход работы
+
+Работа выполнялась на Ubuntu 20.04.6, запущенной на виртуальной машине и имеющей IP 192.168.30.130.
+
+## 3. Создание сниффера пакетов
+
+
+
+Глобально логику работы сниффера можно поделить на несколько этапов:
+
+- Поиск и выбор интерфейса для перехвата пакетов;
+- Определение типа поступившего пакета;
+- Вывод информации о пакете в лог-файл.
+
+### 3.1. Поиск и выбор интерфейса для перехвата пакетов
+
+Приведённый далее код позволяет пользователю получить список всех доступных интерфейсов, выбрать нужное и перехватывать все пакеты, которые поступают на данный интерфейс.
+
+```cpp
+        //First get the list of available devices
+	printf("Finding available devices ... ");
+	if( pcap_findalldevs( &alldevsp , errbuf) )
+	{
+		printf("Error finding devices : %s" , errbuf);
+		exit(1);
+	}
+	printf("Done");
+	
+	//Print the available devices
+	printf("\nAvailable Devices are :\n");
+	for(device = alldevsp ; device != NULL ; device = device->next)
+	{
+		printf("%d. %s - %s\n" , count , device->name , device->description);
+		if(device->name != NULL)
+		{
+			strcpy(devs[count] , device->name);
+		}
+		count++;
+	}
+	
+	//Ask user which device to sniff
+	printf("Enter the number of the device you want to sniff : ");
+	scanf("%d" , &n);
+	devname = devs[n];
+	
+	//Open the device for sniffing
+	printf("Opening device %s for sniffing ... " , devname);
+	handle = pcap_open_live(devname , 65536 , 1 , 0 , errbuf);
+```
+
+```cpp
+	pcap_loop(handle , -1 , process_packet , NULL);
+```
+
+Стоит отметить, что получениче доступа ко всем интерфейсам - операция, требующая root-прав, и именно поэтому сам сниффер необходимо будет запускать с использованием sudo.
+
+### 3.2 Определение типа поступившего пакета
+
+Приведённый далее код использует данные из заголовков пакетов для определения типа пакета и вызова соответствующей функции. Большая их часть (ICMP, TCP, UDP) функционируют поверх IP, и для них информацию о типе пакета можно получить из IP-заголовка.
+
+```cpp
+ 	//Get the IP Header part of this packet , excluding the ethernet header
+	struct ethhdr *eth = (struct ethhdr *)buffer;
+	struct arphdr *arp;
+	arp = (struct arphdr *) (buffer + sizeof(struct ethhdr));
+	print_arp_packet(arp);
+	
+	
+	struct iphdr *iph = (struct iphdr*)(buffer + sizeof(struct ethhdr));
+	++total;
+	switch (iph->protocol) //Check the Protocol and do accordingly...
+	{
+		case 1:  //ICMP Protocol
+			++icmp;
+			print_icmp_packet( buffer , size);
+			break;
+		
+		case 2:  //IGMP Protocol
+			++igmp;
+			break;
+		
+		case 6:  //TCP Protocol
+			++tcp;
+			print_tcp_packet(buffer , size);
+			break;
+		
+		case 17: //UDP Protocol
+			++udp;
+			print_udp_packet(buffer , size);
+			break;
+```
+
+### 3.3. Вывод информации из заголовка
+
+При помощи структур (struct) можно достаточно легко и просто "форматировать" выделенный заголовку фрагент памяти. В качестве примера приведём обработку TCP-заголовка:
+
+```cpp
+void print_tcp_packet(const u_char * Buffer, int Size)
+{
+	unsigned short iphdrlen;
+	
+	struct iphdr *iph = (struct iphdr *)( Buffer  + sizeof(struct ethhdr) );
+	iphdrlen = iph->ihl*4;
+	
+	struct tcphdr *tcph=(struct tcphdr*)(Buffer + iphdrlen + sizeof(struct ethhdr));
+			
+	int header_size =  sizeof(struct ethhdr) + iphdrlen + tcph->doff*4;
+	
+	fprintf(logfile , "\n\n***********************TCP Packet*************************\n");	
+		
+	print_ip_header(Buffer,Size);
+		
+	fprintf(logfile , "\n");
+	fprintf(logfile , "TCP Header\n");
+	fprintf(logfile , "   |-Source Port      : %u\n",ntohs(tcph->source));
+	fprintf(logfile , "   |-Destination Port : %u\n",ntohs(tcph->dest));
+	fprintf(logfile , "   |-Sequence Number    : %u\n",ntohl(tcph->seq));
+	fprintf(logfile , "   |-Acknowledge Number : %u\n",ntohl(tcph->ack_seq));
+	fprintf(logfile , "   |-Header Length      : %d DWORDS or %d BYTES\n" ,(unsigned int)tcph->doff,(unsigned int)tcph->doff*4);
+	//fprintf(logfile , "   |-CWR Flag : %d\n",(unsigned int)tcph->cwr);
+	//fprintf(logfile , "   |-ECN Flag : %d\n",(unsigned int)tcph->ece);
+	fprintf(logfile , "   |-Urgent Flag          : %d\n",(unsigned int)tcph->urg);
+	fprintf(logfile , "   |-Acknowledgement Flag : %d\n",(unsigned int)tcph->ack);
+	fprintf(logfile , "   |-Push Flag            : %d\n",(unsigned int)tcph->psh);
+	fprintf(logfile , "   |-Reset Flag           : %d\n",(unsigned int)tcph->rst);
+	fprintf(logfile , "   |-Synchronise Flag     : %d\n",(unsigned int)tcph->syn);
+	fprintf(logfile , "   |-Finish Flag          : %d\n",(unsigned int)tcph->fin);
+	fprintf(logfile , "   |-Window         : %d\n",ntohs(tcph->window));
+	fprintf(logfile , "   |-Checksum       : %d\n",ntohs(tcph->check));
+	fprintf(logfile , "   |-Urgent Pointer : %d\n",tcph->urg_ptr);
+	fprintf(logfile , "\n");
+	fprintf(logfile , "                        DATA Dump                         ");
+	fprintf(logfile , "\n");
+		
+	fprintf(logfile , "IP Header\n");
+	PrintData(Buffer,iphdrlen);
+		
+	fprintf(logfile , "TCP Header\n");
+	PrintData(Buffer+iphdrlen,tcph->doff*4);
+		
+	fprintf(logfile , "Data Payload\n");	
+	PrintData(Buffer + header_size , Size - header_size );
+						
+	fprintf(logfile , "\n###########################################################");
+}
+```
+
+Самое интересное в приведённом выше коде - это создание структуры с заданным начальным адресом (сдвиг относительно начала всего буфера на размеры Ethernet- и IP-заголовков) и последующие достаточно простые операции обращения к необходимым значениям, например, **ntohs(tcph->source)**.
+
+## 4. Тестирование сниффера
+
+Тестирование сниффера производилось в паре с Wireshark - популярным и стабильынм сниффером трафика.
+
+### 4.1. Протокол ICMP
+
+Выполним команду **ping 8.8.8.8**, проверим, какую информацию получится получить из перехваченных ICMP-пакетов:
+
+![icmp-wireshark](images/task-11/icmp-wireshark.png)
+
+![icmp-sniffer](images/task-11/icmp-sniffer.png)
+
+### 4.2. Протокол TCP
+
+Выполним команду для сканирования TCP-портов **sudo nmap -PS 192.168.1.1 -p 80**, проверим информацию, полученную из перехваченных пакетов:
+
+![tcp-wireshark](images/task-11/tcp-wireshark.png)
+
+![tcp-sniffer](images/task-11/tcp-sniffer.png)
+
+### 4.3. Протокол UDP
+
+Аналогично предыдущему пункту, выполним команду для сканирования TCP-портов **sudo nmap -sU 192.168.1.1 -p 80**, проверим информацию, полученную из перехваченных пакетов:
+
+![udp-wireshark](images/task-11/udp-wireshark.png)
+
+![udp-sniffer](images/task-11/udp-sniffer.png)
+
+### 4.4. Протокол ARP
+
+sudo arping 192.168.1.1
+
+Для получения информации из ARP-пакетов воспользуемся командой **arping 192.168.1.1**, сравним полученную из пакетов информацию:
+
+![arp-wireshark](images/task-11/arp-wireshark.png)
+
+![arp-sniffer](images/task-11/arp-sniffer.png)
+
+### 4.5. Результаты тестирования
+
+Полученная при помощи сниффера информация соответствует эталонной, полученной из Wireshark, и не противоречит здравому смыслу. Стоит отметить, что в сравнении с созданным сниффером Wireshark является куда более продвинутым и удобным в использовании вследствие большого количества сил и времени, затраченного на его разработку.
+
+## 5. Выводы
+
+В рамках данной работы был написан сниффер пакетов для протоколов ICMP, TCP, UDP и ARP. Работа сниффера была протестирована, результаты соответствуют аналогичным в Wireshark, что говорит о корректности созданной нами программы.
+
