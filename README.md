@@ -81,6 +81,7 @@
 Результат компиляции и исполнения программ представлен на картинке ниже:
 
 ![sock_cl](images/task-1/sock_cl.png)
+
 ![sock_sr](images/task-1/sock_sr.png)
 
 Программа-клиент для работы требует ip-адрес сервера, в данном случае в качестве этого параметра указан "localhost". Клиент считывает и отправляет строку программе-серверу, которая переводит её в верхний регистр и отправляет обратно. Клиент выводит полученное сообение в консоль.
@@ -91,9 +92,97 @@
 
 Модифицируйте программу echo_server.cpp так, чтобы при ответе на запросы клиента что-либо выводилось в окне сервера. Испытайте работу эхо-сервера при работе с несколькими клиентами.
 
-```cpp
+Измененённая версия программы приводится ниже:
 
+```cpp
+/*
+** echo_server.cpp -- the echo server for echo_cient.cpp; demonstrates UNIX sockets
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+
+#define SOCK_PATH "echo_socket"
+
+int main(void)
+{
+	int s, s2, t, len;
+	struct sockaddr_un local, remote;
+	char str[100];
+
+	if ((s = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+		perror("socket");
+		exit(1);
+	}
+
+	local.sun_family = AF_UNIX;
+//	remote.sun_family = AF_UNIX;       //
+	strcpy(local.sun_path, SOCK_PATH);
+	unlink(local.sun_path);
+	len = strlen(local.sun_path) + sizeof(local.sun_family);
+	if (bind(s, (struct sockaddr *)&local, len) == -1) {
+		perror("bind");
+		exit(1);
+	}
+
+	if (listen(s, 5) == -1) {
+		perror("listen");
+		exit(1);
+	}
+
+	for(;;) {
+		int done, n;
+		printf("Waiting for a connection...\n");
+		t = sizeof(remote);
+		if ((s2 = accept(s, (struct sockaddr *)&remote, (socklen_t *)&t)) == -1) {
+			perror("accept");
+			exit(1);
+		}
+
+		printf("Connected.\n");
+
+		done = 0;
+		do {
+			n = recv(s2, str, 100, 0);
+			if (n <= 0) {
+				if (n < 0) perror("recv");
+				done = 1;
+			}
+
+			if (!done)
+                printf("From clt # %d: %s", s2, str);
+				if (send(s2, str, n, 0) < 0) {
+					perror("send");
+					done = 1;
+				}
+		} while (!done);
+
+		close(s2);
+	}
+
+	return 0;
+}
 ```
+
+Работа сервера и двух клиентов приведена ниже:
+
+![EcSerMod](images/task-1/EcSerMod.png)
+
+![ecClt1](images/task-1/ecClt1.png)
+
+![ecClt2](images/task-1/ecClt2.png)
+
+Можно видеть, что сервер может работать только с одним клиентом. Первый клиент был подключен первым, и только его сообщения обрабатывались сервером. Это связано с тем, что сервер, установив соединение с одним клиентом, переводит соединение с остальными клиентами в состояние блокировки. Чтобы избавится от этого недостатка, следует разделить работу сервера на несколько потоков.
+
+## Выводы
+
+В ходе выполнения данной работы были изучены основные системные вызовы для создания сокетных соединений различных типов для обмена данными на хост-машине и по сети.
 
 # 2. L4 Socket sample
 
